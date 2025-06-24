@@ -14,6 +14,7 @@ from nltk.stem import PorterStemmer
 import nltk
 import re
 import sys
+from scipy.ndimage import rotate as scipy_rotate, shift as scipy_shift, zoom as scipy_zoom
 # Ensure NLTK stopwords are downloaded
 """
     IMPORTANT NOTES:
@@ -48,7 +49,7 @@ except ImportError:
 __all__ = [
     "Model", "DenseLayer", "Conv2DLayer", "MaxPool2DLayer", "Flatten",
     "TextManager", "RELU", "Softmax", "Sigmoid", "LeakyRELU",
-    "Dropout", "CrossEntropy", "MSE", "LayerConfig", "DebugLogger"
+    "Dropout", "CrossEntropy", "MSE", "LayerConfig", "DebugLogger","AugmentImage"
 ]
 # === DEBUG LOGGER ===
 class DebugLogger:
@@ -108,11 +109,19 @@ class DebugLogger:
                 self.log_file.close()
             except:
                 pass
+# === Image Augmentation ===
+def augment_dataset(X, augmenter):
+    original_shape = X.shape[1:]
+    X_aug = augmenter.augment_library(X)
+    return X_aug.reshape(X.shape[0], -1)
 # === Normalization Functions ===
-def softmax(x):
+def softmax(x, axis=1):
     xp = gpu.xp
-    e_x = xp.exp(x - xp.max(x, axis=1, keepdims=True))
-    return e_x / e_x.sum(axis=1, keepdims=True)
+    e_x = xp.exp(x - xp.max(x, axis=axis, keepdims=True))
+    return e_x / e_x.sum(axis=axis, keepdims=True)
+def softmax_backward(grad, softmax_output):
+        xp = gpu.xp
+        return softmax_output * (grad - np.sum(grad * softmax_output, axis=-1, keepdims=True))
 def sigmoid(x):
     xp = gpu.xp
     return 1 / (1 + xp.exp(-x))
@@ -176,7 +185,6 @@ def col2im(cols, X_shape, filter_size, stride, padding):
     H_padded, W_padded = H + 2*padding, W + 2*padding
     X_padded = xp.zeros((N, C, H_padded, W_padded), dtype=cols.dtype)
     cols_reshaped = cols.reshape(N, out_h, out_w, C, f, f).transpose(0,3,4,5,1,2)
-     
     X_padded_cpu = gpu.to_cpu(X_padded)
     cols_reshaped_cpu = gpu.to_cpu(cols_reshaped)
     for y in range(f):
@@ -206,12 +214,9 @@ class Dropout(ActivationFunction):
     def apply(self, x):
         xp = gpu.xp
         if self.training:
-            # Create mask with zeros at dropped positions
             self.mask = xp.random.rand(*x.shape) > self.p
-            # Scale output to keep expected value same during training
             return (x * self.mask) / (1 - self.p)
         else:
-            # During evaluation, do nothing
             return x
 
     def derivative(self, x):
@@ -259,7 +264,7 @@ class Softmax(ActivationFunction):
     def derivative(self, x):
         warnings.warn("Using simplified softmax derivative (1s). Ensure cross-entropy loss is used", RuntimeWarning)
         xp = gpu.xp
-        return xp.ones_like(x)
+        return softmax_backward(xp.ones_like(x), x)
 # === Loss Function ===
 class LossFunction:
     def __call__(self, y_true, y_pred):
@@ -313,8 +318,15 @@ class LayerConfig:
         self.layer_class = layer_class
         self.activation = activation
         self.kwargs = kwargs
+class Layer:
+    def __init__(self):
+        pass
+    def forward(self, x):
+        raise NotImplementedError
+    def backward(self, grad_output, learning_rate,lambda_=0.0):
+        raise NotImplementedError
 # === Layer ===
-class DenseLayer:
+class DenseLayer(Layer):
     def __init__(self, input_size, output_size, activation,regularization):
         xp = gpu.xp
         if isinstance(activation, (RELU, LeakyRELU)):
@@ -325,7 +337,6 @@ class DenseLayer:
         self.b = xp.zeros((1, output_size))
         self.activation = activation
         self.regularization=regularization
-
     def forward(self, x):
         xp = gpu.xp
         x= gpu.to_device(x)
@@ -350,7 +361,7 @@ class DenseLayer:
         self.w -= learning_rate * grad_w
         self.b -= learning_rate * grad_b
         return grad_input
-class MaxPool2D:
+class MaxPool2D(Layer):
     def __init__(self, kernel_size=2, stride=2):
         self.kernel_size = kernel_size
         self.stride = stride
@@ -405,7 +416,6 @@ class MaxPool2DLayer:
 
 class Conv2DLayer:
     def __init__(self, input_shape, num_filters, filter_size, activation, stride=1, padding=0):
-        # Always force use_torch_conv=True
         self.conv = Conv2D(num_filters, filter_size, input_shape, stride, padding, use_torch_conv=True)
         self.activation = activation
         self.output_shape = self.conv.output_shape
@@ -417,8 +427,6 @@ class Conv2DLayer:
         return self.conv.backward(grad_activation, learning_rate, lambda_)
 
 def fast_conv2d_batch(x, filters, stride=1, padding=0):
-     
-     
     xp = gpu.xp
     batch, in_channels, H, W = x.shape
     out_channels, _, kH, kW = filters.shape
@@ -441,13 +449,15 @@ def fast_conv2d_batch(x, filters, stride=1, padding=0):
         outs.append(conv)
     out = xp.stack(outs, axis=1)
     return out
-class DebugShape:
+class DebugShape(Layer):
+    def __init__(self):
+        pass
     def forward(self, x):
         print("DEBUG: Shape before Dense:", x.shape)
         return x
     def backward(self, grad, *args):
         return grad
-class Conv2D:
+class Conv2D(Layer):
     def __init__(self, num_filters, filter_size, input_shape, stride=1, padding=0, use_torch_conv=True):
         xp = gpu.xp
         self.num_filters = num_filters
@@ -458,7 +468,7 @@ class Conv2D:
         depth = input_shape[0]
         scale = xp.sqrt(2.0 / (filter_size * filter_size * depth))
         self.filters = xp.random.randn(num_filters, depth, filter_size, filter_size).astype(xp.float32) * scale
-        self.biases = xp.zeros((num_filters,), dtype=xp.float32)  # 1D bias
+        self.biases = xp.zeros((num_filters,), dtype=xp.float32)
         in_h, in_w = input_shape[1], input_shape[2]
         out_h = (in_h - filter_size + 2 * padding) // stride + 1
         out_w = (in_w - filter_size + 2 * padding) // stride + 1
@@ -496,26 +506,19 @@ class Conv2D:
     def backward(self, d_out, learning_rate, lambda_=0.0):
         xp = gpu.xp
         if self.use_torch_conv:
-            # Use PyTorch autograd for backward
             import torch
             import torch.nn.functional as torch_F
-            # Convert everything to torch tensors
             x_torch = torch.from_numpy(gpu.to_cpu(self.last_input)).float().requires_grad_(True)
             weight = torch.from_numpy(gpu.to_cpu(self.filters)).float().requires_grad_(True)
             bias = torch.from_numpy(gpu.to_cpu(self.biases)).float().requires_grad_(True)
             d_out_torch = torch.from_numpy(gpu.to_cpu(d_out)).float()
-            # Forward
             y = torch_F.conv2d(x_torch, weight, bias=bias, stride=self.stride, padding=self.padding)
-            # Backward
             y.backward(d_out_torch)
-            # Update weights
             with torch.no_grad():
                 weight -= learning_rate * weight.grad
                 bias -= learning_rate * bias.grad
-            # Copy updated weights back
             self.filters = gpu.to_gpu(weight.detach().cpu().numpy()) if gpu._has_cuda else weight.detach().cpu().numpy()
             self.biases = gpu.to_gpu(bias.detach().cpu().numpy()) if gpu._has_cuda else bias.detach().cpu().numpy()
-            # Return grad_input for next layer
             grad_input = x_torch.grad.detach().cpu().numpy()
             grad_input = gpu.to_device(grad_input)
             return grad_input
@@ -551,7 +554,186 @@ class Flatten:
         return x.reshape(x.shape[0], -1)
     def backward(self, grad_output, learning_rate, lambda_=0.0):
         return grad_output.reshape(self.input_shape)        
- 
+class DotProductAttention(Layer):
+    def __init__(self,input_size, output_size,activation=Softmax):
+        xp = gpu.xp
+        self.input_size = input_size
+        self.output_size = output_size
+        self.activation = activation() if isinstance(activation, type) else activation
+        self.W_q = xp.random.randn(input_size, output_size) * 0.01
+        self.W_k = xp.random.randn(input_size, output_size) * 0.01
+        self.W_v = xp.random.randn(input_size, output_size) * 0.01
+        self.b_q = xp.zeros((1, output_size))
+        self.b_k = xp.zeros((1, output_size))
+        self.b_v = xp.zeros((1, output_size))
+    def forward(self, x):
+        xp = gpu.xp
+        self.x = x
+        self.Q = x @ self.W_q + self.b_q
+        self.K = x @ self.W_k + self.b_k
+        self.V = x @ self.W_v + self.b_v
+        self.scores = xp.matmul(self.Q, self.K.transpose(0, 2, 1)) /xp.sqrt(self.output_size)
+        mask = xp.tril(xp.ones_like(self.scores), k=-1).astype(bool)
+        self.scores = xp.where(mask, -1e9, self.scores)
+        self.attention = self.activation.apply(self.scores)
+        self.output = xp.matmul(self.attention, self.V)
+        return self.output
+    def backward(self, grad_output, learning_rate, lambda_=0.0):
+        xp = gpu.xp
+        B, T, d = grad_output.shape
+        dAttention = xp.matmul(grad_output, self.V.transpose(0, 2, 1))
+        dV = xp.matmul(self.attention.transpose(0, 2, 1), grad_output)
+        dScores = self.activation.derivative(dAttention, self.attention) / xp.sqrt(self.output_size)
+        dQ = xp.matmul(dScores, self.K)
+        dK = xp.matmul(dScores.transpose(0, 2, 1), self.Q)
+        dx_q = xp.matmul(dQ, self.W_q.T)
+        dx_k = xp.matmul(dK, self.W_k.T)
+        dx_v = xp.matmul(dV, self.W_v.T)
+        dx = dx_q + dx_k + dx_v
+        dW_q = xp.matmul(self.x.transpose(0, 2, 1), dQ).sum(axis=0) / B + lambda_ * self.W_q
+        dW_k = xp.matmul(self.x.transpose(0, 2, 1), dK).sum(axis=0) / B + lambda_ * self.W_k
+        dW_v = xp.matmul(self.x.transpose(0, 2, 1), dV).sum(axis=0) / B + lambda_ * self.W_v
+        db_q = dQ.sum(axis=(0, 1), keepdims=True) / B
+        db_k = dK.sum(axis=(0, 1), keepdims=True) / B
+        db_v = dV.sum(axis=(0, 1), keepdims=True) / B
+        self.W_q -= learning_rate * dW_q
+        self.W_k -= learning_rate * dW_k
+        self.W_v -= learning_rate * dW_v
+        self.b_q -= learning_rate * db_q
+        self.b_k -= learning_rate * db_k
+        self.b_v -= learning_rate * db_v
+        return dx
+class DotProductAttentionLayer(Layer):
+    def __init__(self,input_size, output_size,activation=Softmax):
+        self.DotProductAttnLayer = DotProductAttention(input_size, output_size, activation)
+    def forward(self, x):
+        return self.DotProductAttnLayer.forward(x)
+    def backward(self, grad_output, learning_rate, lambda_=0.0):        
+        return self.DotProductAttnLayer.backward(grad_output, learning_rate, lambda_)
+class MultiHeadAttention(Layer):
+    def __init__(self,input_size, output_size,num_heads,activation=Softmax):
+        xp = gpu.xp
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_heads = num_heads
+        self.head_dim = output_size // num_heads
+        self.activation = activation() if isinstance(activation, type) else activation
+        self.W_q = xp.random.randn(input_size, output_size) * 0.01
+        self.W_k = xp.random.randn(input_size, output_size) * 0.01
+        self.W_v = xp.random.randn(input_size, output_size) * 0.01
+        self.W_o = xp.random.randn(output_size, output_size) * 0.01
+        self.b_o = xp.zeros((1, output_size))
+        self.b_q = xp.zeros((1, output_size))
+        self.b_k = xp.zeros((1, output_size))
+        self.b_v = xp.zeros((1, output_size))
+    def split_heads(self, x, B, T):
+        xp = gpu.xp
+        return x.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+    def combine_heads(self, x):
+        xp = gpu.xp
+        B, H, T, D = x.shape
+        return x.transpose(0, 2, 1, 3).reshape(B, T, H * D)
+    def forward(self, x):
+        xp = gpu.xp
+        B, T, _ = x.shape
+        self.x = x
+        Q = x @ self.W_q + self.b_q
+        K = x @ self.W_k + self.b_k
+        V = x @ self.W_v + self.b_v
+        Q = self.split_heads(Q, B, T)
+        K = self.split_heads(K, B, T)
+        V = self.split_heads(V, B, T)
+        scores = xp.matmul(Q, K.transpose(0, 1, 3, 2)) / xp.sqrt(self.head_dim)
+        mask = xp.tril(xp.ones((T, T)), k=-1).astype(bool)[None, None, :, :]
+        scores = xp.where(mask, -1e9, scores)
+        attention = self.activation.apply(scores)
+        attended = xp.matmul(self.attention, V) 
+        combined = self.combine_heads(attended)
+        self.output = combined @ self.W_o + self.b_o
+        self.Q = Q
+        self.K = K
+        self.V = V
+        self.attention = attention
+        self.attended = attended
+        return self.output
+    def backward(self, grad_output, learning_rate=0.01, lambda_=0.0):
+        xp = gpu.xp
+        B, T, _ = grad_output.shape
+        dCombined = grad_output @ self.W_o.T 
+        dW_o = self.combine_heads(self.attended).transpose(0, 2, 1) @ grad_output 
+        dW_o = xp.mean(dW_o, axis=0) + lambda_ * self.W_o
+        db_o = xp.mean(grad_output, axis=(0, 1), keepdims=True)
+        dCombined = dCombined.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        dAttention = xp.matmul(dCombined, self.V.transpose(0, 1, 3, 2))
+        dV = xp.matmul(self.attention.transpose(0, 1, 3, 2), dCombined)
+        dScores = self.activation.derivative(dAttention, self.attention) / xp.sqrt(self.head_dim)
+        dQ = xp.matmul(dScores, self.K) 
+        dK = xp.matmul(dScores.transpose(0, 1, 3, 2), self.Q)  
+        dQ = dQ.transpose(0, 2, 1, 3).reshape(B, T, self.output_size)
+        dK = dK.transpose(0, 2, 1, 3).reshape(B, T, self.output_size)
+        dV = dV.transpose(0, 2, 1, 3).reshape(B, T, self.output_size)
+        dx_q = dQ @ self.W_q.T
+        dx_k = dK @ self.W_k.T
+        dx_v = dV @ self.W_v.T
+        dx = dx_q + dx_k + dx_v  
+        dW_q = xp.matmul(self.x.transpose(0, 2, 1), dQ)
+        dW_k = xp.matmul(self.x.transpose(0, 2, 1), dK)
+        dW_v = xp.matmul(self.x.transpose(0, 2, 1), dV)
+        dW_q = xp.mean(dW_q, axis=0) + lambda_ * self.W_q
+        dW_k = xp.mean(dW_k, axis=0) + lambda_ * self.W_k
+        dW_v = xp.mean(dW_v, axis=0) + lambda_ * self.W_v
+        db_q = xp.mean(dQ, axis=(0, 1), keepdims=True)
+        db_k = xp.mean(dK, axis=(0, 1), keepdims=True)
+        db_v = xp.mean(dV, axis=(0, 1), keepdims=True)
+        self.W_q -= learning_rate * dW_q
+        self.W_k -= learning_rate * dW_k
+        self.W_v -= learning_rate * dW_v
+        self.W_o -= learning_rate * dW_o
+        self.b_q -= learning_rate * db_q
+        self.b_k -= learning_rate * db_k
+        self.b_v -= learning_rate * db_v
+        self.b_o -= learning_rate * db_o
+        return dx
+class MultiHeadAttentionLayer(Layer):
+    def __init__(self,input_size, output_size,num_heads,activation=Softmax):
+        self.MultiHeadAttnLayer = MultiHeadAttention(input_size, output_size, num_heads, activation)
+        self.num_heads = num_heads
+        self.head_dim = output_size // num_heads 
+    def forward(self, x):
+        return self.MultiHeadAttnLayer.forward(x)
+    def backward(self, grad_output, learning_rate, lambda_=0.0):
+        return self.MultiHeadAttnLayer.backward(grad_output, learning_rate, lambda_)
+class TransformerFeedForward(Layer):
+    def __init__(self, input_size, hidden_size, activation=RELU(), regularization='l2'):
+        self.fc1 = DenseLayer(input_size, hidden_size, activation, regularization)
+        self.fc2 = DenseLayer(hidden_size, input_size, activation=Linear(), regularization=regularization)
+    def forward(self, x):
+        self.x = x
+        self.h = self.fc1.forward(x)  
+        self.out = self.fc2.forward(self.h) 
+        return self.out
+
+    def backward(self, grad_output, lr, lambda_=0.0):
+        grad_h = self.fc2.backward(grad_output, lr, lambda_)
+        dx = self.fc1.backward(grad_h, lr, lambda_)
+        return dx
+class TransformerBlock(Layer):
+    def __init__(self, input_size, num_heads, hidden_size):
+        self.attn = MultiHeadAttentionLayer(input_size, input_size, num_heads)
+        self.ffn = TransformerFeedForward(input_size, hidden_size)
+    def forward(self, x):
+        self.x = x
+        self.a_out = self.attn.forward(x)
+        self.res1 = x + self.a_out
+        self.f_out = self.ffn.forward(self.res1)
+        self.out = self.res1 + self.f_out
+        return self.out
+
+    def backward(self, grad_output, lr, lambda_=0.0):
+        grad_f = self.ffn.backward(grad_output, lr, lambda_)
+        grad_res1 = grad_output + grad_f
+        grad_attn = self.attn.backward(grad_res1, lr, lambda_)
+        return grad_attn + grad_res1 
 #=== Model ===
 class Model:
     def __init__(self, layer_configs, input_size=None, regularization=None):
@@ -870,6 +1052,86 @@ class TextManager:
         ]
     def transform(self, texts):
         return self.vectorizer.transform(texts)
+class AugmentImage:
+    def __init__(self, rotate=None, shift=None, zoom=None):
+        self.rotate_angle = rotate
+        self.shift_val = shift
+        self.zoom_factor = zoom
+
+    def rotate(self, img):
+        angle = self.rotate_angle
+        if angle == "random":
+            angle = np.random.uniform(-15, 15)
+        return scipy_rotate(img, angle=angle, order=1, mode='nearest')
+
+    def shift(self, img):
+        x = y = self.shift_val
+        if x == "random":
+            x = np.random.uniform(-2, 2)
+            y = np.random.uniform(-2, 2)
+
+        if img.ndim == 2:
+            shift_vals = (x, y)
+        elif img.ndim == 3:
+            # Example: (1, 28, 28) → must be (0, x, y)
+            shift_vals = (0, x, y)
+        else:
+            raise ValueError(f"[shift] Unsupported img shape: {img.shape}")
+
+        return scipy_shift(img, shift=shift_vals, order=1, mode='nearest')
+
+    @staticmethod
+    def zoom_to_same_shape(img, zoom_factor):
+        original_shape = img.shape
+        zoomed = scipy_zoom(img, zoom=zoom_factor, order=1, mode='nearest')
+        zh, zw = zoomed.shape
+        oh, ow = original_shape
+        if zh > oh:
+            start = (zh - oh) // 2
+            zoomed = zoomed[start:start + oh, :]
+        if zw > ow:
+            start = (zw - ow) // 2
+            zoomed = zoomed[:, start:start + ow]
+        zh, zw = zoomed.shape
+        pad_h = max(oh - zh, 0)
+        pad_w = max(ow - zw, 0)
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        zoomed = np.pad(zoomed, ((pad_top, pad_bottom), (pad_left, pad_right)), mode='constant')
+        zoomed = zoomed[:oh, :ow]
+        if zoomed.shape != original_shape:
+            zoomed = np.resize(zoomed, original_shape)
+
+        return zoomed
+    def zoom(self, img):
+        factor = self.zoom_factor
+        if factor == "random":
+            factor = np.random.uniform(0.9, 1.1)
+        return self.zoom_to_same_shape(img, factor)
+    def augment(self, img):
+        assert isinstance(img, np.ndarray), "Image must be a NumPy array"
+        original_shape = img.shape
+        if self.rotate_angle is not None:
+            img = self.rotate(img)
+        if self.shift_val is not None:
+            img = self.shift(img)
+        if self.zoom_factor is not None:
+            img = self.zoom(img)
+        if img.shape != original_shape:
+            print(f"[WARN] Shape mismatch corrected: {img.shape} -> {original_shape}")
+            img = np.resize(img, original_shape)
+        return img
+    def augment_library(self, img_list):
+        augmented = []
+        for i, img in enumerate(img_list):
+            aug = self.augment(img)
+            if aug.shape != img.shape:
+                print(f"[ERROR] Item {i} has shape {aug.shape}, resizing to {img.shape}")
+                aug = np.resize(aug, img.shape)
+            augmented.append(aug)
+        return np.stack(augmented, axis=0)
 class GPUManager:
     """Minimal GPU manager with automatic fallback to CPU"""
     def __init__(self):
