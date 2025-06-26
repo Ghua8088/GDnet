@@ -3,7 +3,7 @@
 Welcome to **GDnet** — a self-built, NumPy and CuPy-powered deep learning framework. It was created as a learning journey into the internal workings of neural networks. GDnet supports both **CPU and GPU** training, and includes layers like `Dense`, `Conv2D`, `MaxPool2D`, `Flatten`, and more.
 
 > ⚠️ Note: This is not meant to compete with PyTorch or TensorFlow — it's a ** Learning framework** for learning, experimentation, and understanding how things work under the hood & not the best for production 😭.
-[logo](gdnet.png)
+![logo](gdnet.png)
 ---
 
 ## ✨ Features
