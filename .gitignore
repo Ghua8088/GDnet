@@ -1,1 +1,63 @@
-**/__pycache__/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.pkl
+*.log
+
+# Jupyter notebooks (if any)
+.ipynb_checkpoints/
+
+# Environments
+.env
+.venv/
+env/
+venv/
+
+# Compiled C/C++ files (if any native extensions)
+*.o
+*.out
+*.a
+*.dylib
+*.dll
+*.exe
+
+# PyInstaller
+*.spec
+dist/
+build/
+
+# Temporary files
+*.bak
+*.tmp
+*.swp
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Test and coverage
+coverage.xml
+htmlcov/
+.tox/
+pytest_cache/
+.cache/
+
+# GDNet-specific
+*.onnx
+*.npz
+*.pt
+*.weights
+checkpoints/
+models/
+output/
+~/.cupy/
