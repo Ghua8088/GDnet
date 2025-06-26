@@ -26,9 +26,10 @@ Welcome to **GDnet** — a self-built, NumPy and CuPy-powered deep learning fram
 you can place the folder in your project and import it like this:
 
 ```python
-from gdnet import DenseLayer, Conv2DLayer, MaxPool2D, Flatten, Dropout
-from gdnet import CrossEntropy, MSE
-from gdnet import Model, TextManager
+from gdnet.layers import DenseLayer, Conv2DLayer, MaxPool2D, Flatten, Dropout
+from gdnet.lossfunctions import CrossEntropy, MSE
+from gdnet.core import Model
+from gdnet.utils import TextManager
 ```
 
 Or package it and install locally:
