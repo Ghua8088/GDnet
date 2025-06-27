@@ -19,11 +19,11 @@ Welcome to **GDnet** — a self-built, NumPy and CuPy-powered deep learning fram
 * ✅ Custom `TextManager` for text preprocessing and vectorization
 * ✅ Training with progress tracking and confusion matrix reporting
 * ✅ Built-in model save/load system with GPU-safe pickling
-
+* ✅ install directly using pip install gdnet
 ---
 
 ## 📦 Installation
-you can place the folder in your project and import it like this:
+you can clone the repo folder in your project and import it like this:
 
 ```python
 from gdnet.layers import DenseLayer, Conv2DLayer, MaxPool2D, Flatten, Dropout
@@ -32,10 +32,9 @@ from gdnet.core import Model
 from gdnet.utils import TextManager
 ```
 
-Or package it and install locally:
 
 ```bash
-pip install -e .
+pip install gdnet
 ```
 
 ---
@@ -142,7 +141,4 @@ Hoping to push this to the next level, I'll be adding more layers and optimizers
 and I'll be adding more examples soon.
 good luck! 😊
 Have fun learning!
----
-## pushing to PyPi
-Soon!
 ---
