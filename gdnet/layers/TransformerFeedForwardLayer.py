@@ -26,3 +26,18 @@ class TransformerFeedForward(Layer):
         grad_h = self.fc2.backward(grad_output_flat, lr, lambda_)  # (B*S, H)
         dx_flat = self.fc1.backward(grad_h, lr, lambda_)  # (B*S, D)
         return dx_flat.reshape(B, S, D)
+    def get_config(self):
+        return {
+            "input_size": self.input_size,
+            "hidden_size": self.hidden_size,
+            "regularization": self.regularization
+        }
+    def get_weights(self):
+        return {
+            "fc1": gpu.to_cpu(self.fc1.get_weights()),
+            "fc2": gpu.to_cpu(self.fc2.get_weights())
+        }
+
+    def set_weights(self, weights):
+        self.fc1.set_weights(gpu.to_device(weights["fc1"]))
+        self.fc2.set_weights(gpu.to_device(weights["fc2"]))

@@ -1,5 +1,6 @@
 from ..gpu import gpu
 from .base import Layer
+import numpy as np
 class MaxPool2D(Layer):
     def __init__(self, kernel_size=2, stride=2):
         self.kernel_size = kernel_size
@@ -33,15 +34,22 @@ class MaxPool2D(Layer):
         grad_vals = grad_output.flatten()
         grad_flat[xp.arange(grad_flat.shape[0]), idx] = grad_vals
         grad_col = grad_flat.reshape(N, C, out_h, out_w, k, k)
-        for i in range(out_h):
-            for j in range(out_w):
-                h_start = i * s
-                h_end = h_start + k
-                w_start = j * s
-                w_end = w_start + k
-                grad_input[:, :, h_start:h_end, w_start:w_end] += grad_col[:, :, i, j, :, :]
+        for i in range(k):
+            for j in range(k):
+                h_idx = xp.arange(out_h) * s + i
+                w_idx = xp.arange(out_w) * s + j
+                if xp is np:
+                    grad_input[:, :, h_idx[:, None], w_idx] += grad_col[:, :, :, :, i, j]
+                else:
+                    h_idx = h_idx.reshape(1, 1, -1, 1)
+                    w_idx = w_idx.reshape(1, 1, 1, -1)
+                    grad_input = grad_input.copy()
+                    grad_input = grad_input.at[:, :, h_idx, w_idx].add(grad_col[:, :, :, :, i, j])
         return grad_input
-
+    def get_weights(self):
+        return self.filters
+    def set_weights(self, weights):
+        self.filters = weights
 
 class MaxPool2DLayer:
     def __init__(self, kernel_size=2, stride=2):
@@ -52,3 +60,12 @@ class MaxPool2DLayer:
 
     def backward(self, grad_output, learning_rate, lambda_=0.0):
         return self.pool.backward(grad_output)
+    def get_config(self):
+        return {
+            "kernel_size": self.kernel_size,
+            "stride": self.stride
+        }
+    def get_weights(self):
+        return gpu.to_cpu(self.pool.get_weights())
+    def set_weights(self, weights):
+        self.pool.set_weights(gpu.to_device(weights))

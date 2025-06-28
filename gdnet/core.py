@@ -3,22 +3,16 @@ import sys
 import time
 import warnings
 import numpy as np
+import json
 import cupy as cp
 from sklearn.metrics import classification_report
 from .gpu import gpu
-from .layers import PositionalEmbeddingLayer
-from .layers import EmbeddingLayer
-from .layers import TransformerBlock
-from .layers import DenseLayer
-from .layers import Flatten
-from .layers import DebugShape
-from .layers import Conv2DLayer
-from .layers import MaxPool2DLayer
-from .layers import MultiHeadAttentionLayer
-from .layers import TransformerFeedForward
-from .lossfunctions import MSE
-from .utils import DebugLogger
-from .utils.regularization import l1_regularization, l2_regularization
+from .layers import *
+from .activations import *
+from .lossfunctions import *
+from .utils import *
+from .utils.regularization import *
+from .optimizers import *
 class LayerConfig:
     def __init__(self, layer_class, activation=None, **kwargs):
         self.layer_class = layer_class
@@ -28,6 +22,7 @@ class Model:
     def __init__(self, layer_configs, input_size=None, regularization=None):
         self.layers = []
         self.regularization = regularization
+        self.input_size = input_size
         self.logger= DebugLogger(enabled=True, to_file=True)
         in_features = input_size
         self.logger.log(f"Initializing model with input size: {in_features}, regularization: {regularization}, layers: {len(layer_configs)}", "INFO")
@@ -45,6 +40,7 @@ class Model:
             elif layer_cls == Conv2DLayer:
                 kwargs["input_shape"] = in_features   
                 kwargs["activation"] = activation
+                kwargs["regularization"] = regularization
                 layer = Conv2DLayer(**kwargs)
                 in_features = layer.output_shape 
             elif layer_cls == Flatten:
@@ -66,7 +62,7 @@ class Model:
             elif layer_cls == MultiHeadAttentionLayer:
                 num_heads = kwargs["num_heads"]
                 output_size = kwargs["output_size"]
-                layer = MultiHeadAttentionLayer(input_size=in_features, output_size=output_size, num_heads=num_heads, activation=activation)
+                layer = MultiHeadAttentionLayer(input_size=in_features, output_size=output_size, num_heads=num_heads, activation=activation, regularization=regularization)
                 in_features = output_size
             elif layer_cls == TransformerFeedForward:
                 hidden_size = kwargs["hidden_size"]
@@ -81,23 +77,23 @@ class Model:
             elif layer_cls == PositionalEmbeddingLayer:
                 max_len = kwargs["max_len"]
                 embedding_dim = kwargs["embedding_dim"]
-                layer = PositionalEmbeddingLayer(max_len=max_len, embedding_dim=embedding_dim)
+                layer = PositionalEmbeddingLayer(max_len=max_len, embedding_dim=embedding_dim, regularization=regularization)
             elif layer_cls == EmbeddingLayer:
                 vocab_size = kwargs["vocab_size"]
                 embedding_dim = kwargs["embedding_dim"]
-                layer = EmbeddingLayer(vocab_size=vocab_size, embedding_dim=embedding_dim)
+                layer = EmbeddingLayer(vocab_size=vocab_size, embedding_dim=embedding_dim, regularization=regularization)
                 in_features = embedding_dim
                 self.layers.append(layer)
             elif layer_cls == TransformerBlock:
                 num_heads = kwargs["num_heads"]
                 hidden_size = kwargs["hidden_size"]
-                layer = TransformerBlock(input_size=in_features, num_heads=num_heads, hidden_size=hidden_size)
+                layer = TransformerBlock(input_size=in_features, num_heads=num_heads, hidden_size=hidden_size, regularization=regularization)
                 self.layers.append(layer)
             else:
                 raise ValueError(f"Unsupported layer class: {layer_cls}")
             self.layers.append(layer)           
     def forward(self, x):
-        out = gpu.to_gpu(x)
+        out = gpu.to_device(x)
         for layer in self.layers:
             out = layer.forward(out)
         return out
@@ -155,10 +151,10 @@ class Model:
         n_samples = X_train.shape[0]
         best_loss = float('inf')
         epochs_no_improve = 0
-        X_train = gpu.to_gpu(X_train)
-        y_train = gpu.to_gpu(y_train)
-        X_test = gpu.to_gpu(X_test)
-        y_test = gpu.to_gpu(y_test)
+        X_train = gpu.to_device(X_train)
+        y_train = gpu.to_device(y_train)
+        X_test = gpu.to_device(X_test)
+        y_test = gpu.to_device(y_test)
 
         orig_batch_size = batch_size
 
@@ -265,8 +261,8 @@ class Model:
         y_pred = gpu.xp.concatenate(y_pred_batches, axis=0)
         self.accuracy(y_test, y_pred)
     def train_batch(self, X_batch, y_batch, learning_rate=0.01, lambda_=0.0, loss_fn=None):
-        X_batch = gpu.to_gpu(X_batch)
-        y_batch = gpu.to_gpu(y_batch)
+        X_batch = gpu.to_device(X_batch)
+        y_batch = gpu.to_device(y_batch)
         output = self.forward(X_batch)
         loss = loss_fn(y_batch, output)
         if self.regularization == 'l2':
@@ -348,7 +344,93 @@ class Model:
                     arr = getattr(layer, attr)
                     if gpu._has_cuda and 'numpy' in str(type(arr)):
                         try:
-                            setattr(layer, attr, gpu.to_gpu(arr))
+                            setattr(layer, attr, gpu.to_device(arr))
                         except Exception as e:
                             print(f"[WARNING] Could not move {attr} to GPU: {e}")
         return model
+    def export_to_json(self, path):
+        import json
+        def serialize_layer(layer):
+            d = {"type": layer.__class__.__name__}
+            if hasattr(layer, 'w') and layer.w is not None:
+                d["weights"] = gpu.to_cpu(layer.w).tolist()
+            if hasattr(layer, 'b') and layer.b is not None:
+                d["biases"] = gpu.to_cpu(layer.b).tolist()
+            if hasattr(layer, 'filters') and layer.filters is not None:
+                d["filters"] = gpu.to_cpu(layer.filters).tolist()
+            if hasattr(layer, 'biases') and layer.biases is not None:
+                d["conv_biases"] = gpu.to_cpu(layer.biases).tolist()
+            if hasattr(layer, 'activation') and layer.activation is not None:
+                d["activation"] = layer.activation.__class__.__name__
+            if hasattr(layer, 'input_shape'):
+                d["input_shape"] = layer.input_shape
+            if hasattr(layer, 'output_size'):
+                d["output_size"] = layer.output_size
+            return d
+
+        export = {
+            "layers": [serialize_layer(layer) for layer in self.layers if hasattr(layer, 'forward')]
+        }
+        try:
+            with open(path, 'w') as f:
+                json.dump(export, f, indent=2)
+            print(f"Model exported to {path}")
+        except Exception as e:
+            print(f"Failed to export model: {e}")
+    def export_weights(self, path):
+        weights = [layer.get_weights() if hasattr(layer, 'get_weights') else {} for layer in self.layers]
+        with open(path, 'wb') as f:
+            pickle.dump(weights, f)
+        print(f"✅ Exported weights to {path}")
+    def import_weights(self, path):
+        with open(path, 'rb') as f:
+            saved_weights = pickle.load(f)
+        for layer, layer_weights in zip(self.layers, saved_weights):
+            if hasattr(layer, 'set_weights'):
+                layer.set_weights(layer_weights)
+        print(f"✅ Imported weights from {path}")
+    def export_config(self,path):
+        result= {
+            "input_size": self.input_size,
+            "layer_defs": [
+                {
+                    "class": layer.__class__.__name__,
+                    "params": layer.get_config(),
+                    "activation": layer.activation.__class__.__name__ if hasattr(layer, 'activation') else None
+                } for layer in self.layers
+            ]
+        }
+        with open(path, 'w') as f:
+            json.dump(result, f, indent=2)
+    @staticmethod
+    def from_config(config):
+        class_map = {
+            "DenseLayer": DenseLayer,
+            "Conv2DLayer": Conv2DLayer,
+            "Flatten": Flatten,
+            "MaxPool2DLayer": MaxPool2DLayer,
+            "MultiHeadAttentionLayer": MultiHeadAttentionLayer,
+            "TransformerFeedForward": TransformerFeedForward,
+            "PositionalEmbeddingLayer": PositionalEmbeddingLayer,
+            "EmbeddingLayer": EmbeddingLayer,
+            "TransformerBlock": TransformerBlock,
+            "DotProductAttentionLayer": DotProductAttentionLayer,
+            "TransformerFeedForwardLayer": TransformerFeedForwardLayer,
+            "DebugShape": DebugShape,
+        }
+        act_map = {
+            "RELU": RELU,
+            "Softmax": Softmax,
+            "Linear": Linear,
+            "LeakyRELU": LeakyRELU,
+            "Sigmoid": Sigmoid,
+
+        }
+
+        layers = []
+        for l in config["layer_defs"]:
+            cls = class_map[l["class"]]
+            act = act_map[l["activation"]]() if l["activation"] else None
+            layers.append(LayerConfig(cls, activation=act, **l["params"]))
+
+        return Model(layers, input_size=tuple(config["input_size"]))

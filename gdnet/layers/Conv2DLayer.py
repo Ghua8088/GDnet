@@ -9,24 +9,40 @@ try:
 except:
     pass
 class Conv2DLayer:
-    def __init__(self, input_shape, num_filters, filter_size, activation, stride=1, padding=0):
-        self.conv = Conv2D(num_filters, filter_size, input_shape, stride, padding, use_torch_conv=True)
+    def __init__(self, input_shape, num_filters, filter_size, activation, stride=1, padding=0,regularization=None):
+        self.conv = Conv2D(num_filters, filter_size, input_shape, stride, padding, use_torch_conv=True,regularization=regularization)
         self.activation = activation
         self.output_shape = self.conv.output_shape
+        self.num_filters = num_filters
+        self.filter_size = filter_size
+        self.stride = stride
+        self.padding = padding
     def forward(self, x):
         self.conv_out = self.conv.forward(x)
         return self.activation.apply(self.conv_out)
     def backward(self, grad_output, learning_rate, lambda_=0.0):
         grad_activation = grad_output * self.activation.derivative(self.conv_out)
         return self.conv.backward(grad_activation, learning_rate, lambda_)
+    def get_config(self):
+        return {
+            "num_filters": self.num_filters,
+            "filter_size": self.filter_size,
+            "stride": self.stride,
+            "padding": self.padding,
+        }
+    def get_weights(self):
+        return self.conv.get_weights()
+    def set_weights(self, weights):
+        self.conv.set_weights(weights)
 class Conv2D(Layer):
-    def __init__(self, num_filters, filter_size, input_shape, stride=1, padding=0, use_torch_conv=True):
+    def __init__(self, num_filters, filter_size, input_shape, stride=1, padding=0, use_torch_conv=True,regularization=None):
         xp = gpu.xp
         self.num_filters = num_filters
         self.filter_size = filter_size
         self.stride = stride
         self.padding = padding
         self.use_torch_conv = use_torch_conv and HAS_TORCH
+        self.regularization = regularization
         depth = input_shape[0]
         scale = xp.sqrt(2.0 / (filter_size * filter_size * depth))
         self.filters = xp.random.randn(num_filters, depth, filter_size, filter_size).astype(xp.float32) * scale
@@ -77,6 +93,11 @@ class Conv2D(Layer):
             y = torch_F.conv2d(x_torch, weight, bias=bias, stride=self.stride, padding=self.padding)
             y.backward(d_out_torch)
             with torch.no_grad():
+                if lambda_ > 0 and self.regularization:
+                    if self.regularization == 'l2':
+                        weight.grad += lambda_ * weight
+                    elif self.regularization == 'l1':
+                        weight.grad += lambda_ * weight.sign()
                 weight -= learning_rate * weight.grad
                 bias -= learning_rate * bias.grad
             self.filters = gpu.to_gpu(weight.detach().cpu().numpy()) if gpu._has_cuda else weight.detach().cpu().numpy()
@@ -97,10 +118,21 @@ class Conv2D(Layer):
             d_filters = d_out_reshaped.T @ X_col
             d_filters = d_filters.reshape(self.filters.shape)
             d_biases = xp.sum(d_out_reshaped, axis=0, keepdims=True).reshape(self.biases.shape)
-            if lambda_ > 0:
-                d_filters += lambda_ * self.filters
+            if lambda_ > 0 and self.regularization:
+                if self.regularization == 'l2':
+                    d_filters += lambda_ * self.filters
+                elif self.regularization == 'l1':
+                    d_filters += lambda_ * xp.sign(self.filters)
             dX_col = d_out_reshaped @ filters_col
             d_input = col2im(dX_col, self.last_input_shape, f, self.stride, self.padding)
             self.filters -= learning_rate * d_filters
             self.biases -= learning_rate * d_biases
             return d_input
+    def get_weights(self):
+        return {
+            "filters": gpu.to_cpu(self.filters),
+            "biases": gpu.to_cpu(self.biases)
+        }
+    def set_weights(self, weights):
+        self.filters = self.to_device(weights["filters"])
+        self.biases = self.to_device(weights["biases"])

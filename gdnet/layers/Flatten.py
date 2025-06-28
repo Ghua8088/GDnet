@@ -12,3 +12,6 @@ class Flatten(Layer):
         return x.reshape(x.shape[0], -1)
     def backward(self, grad_output, learning_rate, lambda_=0.0):
         return grad_output.reshape(self.input_shape)      
+    def get_config(self):
+        return {}
+    

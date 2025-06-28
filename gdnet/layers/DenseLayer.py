@@ -12,6 +12,7 @@ class DenseLayer(Layer):
         self.b = xp.zeros((1, output_size))
         self.activation = activation
         self.regularization=regularization
+        self.output_size = output_size
     def forward(self, x):
         xp = gpu.xp
         x= gpu.to_device(x)
@@ -36,3 +37,13 @@ class DenseLayer(Layer):
         self.w -= learning_rate * grad_w
         self.b -= learning_rate * grad_b
         return grad_input
+    def get_config(self):
+        return {
+            "output_size": self.output_size,
+            "regularization": self.regularization
+        }
+    def get_weights(self):
+        return {"w": gpu.to_cpu(self.w), "b": gpu.to_cpu(self.b)}
+    def set_weights(self, weights):
+        self.w = gpu.to_device(weights["w"])
+        self.b = gpu.to_device(weights["b"])

@@ -18,3 +18,12 @@ class EmbeddingLayer(Layer):
         xp.add.at(grad_embed, self.input_ids, grad_output)
         self.embedding -= learning_rate * grad_embed
         return None
+    def get_config(self):
+        return {
+            "vocab_size": self.vocab_size,
+            "embedding_dim": self.embedding_dim
+        }
+    def get_weights(self):
+        return gpu.to_cpu(self.embedding)
+    def set_weights(self, weights):
+        self.embedding = self.to_device(weights)

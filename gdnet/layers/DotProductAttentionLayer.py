@@ -50,6 +50,15 @@ class DotProductAttention(Layer):
         self.b_k -= learning_rate * db_k
         self.b_v -= learning_rate * db_v
         return dx
+    def get_weights(self):
+        return {"W_q": gpu.to_cpu(self.W_q), "W_k": gpu.to_cpu(self.W_k), "W_v": gpu.to_cpu(self.W_v), "b_q": gpu.to_cpu(self.b_q), "b_k": gpu.to_cpu(self.b_k), "b_v": gpu.to_cpu(self.b_v)}
+    def set_weights(self, weights):
+        self.W_q = gpu.to_device(weights["W_q"])
+        self.W_k = gpu.to_device(weights["W_k"])
+        self.W_v = gpu.to_device(weights["W_v"])
+        self.b_q = gpu.to_device(weights["b_q"])
+        self.b_k = gpu.to_device(weights["b_k"])        
+        self.b_v = gpu.to_device(weights["b_v"])
 class DotProductAttentionLayer(Layer):
     def __init__(self,input_size, output_size,activation=Softmax):
         self.DotProductAttnLayer = DotProductAttention(input_size, output_size, activation)
@@ -57,3 +66,11 @@ class DotProductAttentionLayer(Layer):
         return self.DotProductAttnLayer.forward(x)
     def backward(self, grad_output, learning_rate, lambda_=0.0):        
         return self.DotProductAttnLayer.backward(grad_output, learning_rate, lambda_)
+    def get_config(self):
+        return {
+            "output_size": self.output_size,
+        }
+    def get_weights(self):
+        return self.DotProductAttnLayer.get_weights()
+    def set_weights(self, weights):
+        self.DotProductAttnLayer.set_weights(weights)
