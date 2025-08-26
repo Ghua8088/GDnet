@@ -24,6 +24,9 @@ class Model:
         self.regularization = regularization
         self.input_size = input_size
         self.logger= DebugLogger(enabled=True, to_file=True)
+        self.best_loss = float('inf')
+        self.best_val_acc = 0.0
+        self.best_model_state = None
         in_features = input_size
         self.logger.log(f"Initializing model with input size: {in_features}, regularization: {regularization}, layers: {len(layer_configs)}", "INFO")
         for i, config in enumerate(layer_configs):
@@ -58,6 +61,9 @@ class Model:
                 continue 
             elif layer_cls == DebugShape:
                 layer = DebugShape()
+                in_features = in_features
+            elif layer_cls == DropoutLayer:
+                layer = DropoutLayer(dropout=kwargs["dropout"])
                 in_features = in_features
             elif layer_cls == MultiHeadAttentionLayer:
                 num_heads = kwargs["num_heads"]
@@ -149,7 +155,6 @@ class Model:
                   early_stopping, patience)
         self.loss_fn = loss_fn
         n_samples = X_train.shape[0]
-        best_loss = float('inf')
         epochs_no_improve = 0
         X_train = gpu.to_device(X_train)
         y_train = gpu.to_device(y_train)
@@ -235,8 +240,8 @@ class Model:
             sys.stdout.write(f"\rEpoch {epoch+1}/{epochs} [{'='*30}] - {num_batches}/{num_batches} - {epoch_time:.1f}s - Loss: {gpu.to_cpu(avg_loss):.4f} - Acc: {accuracy:.4f}\n")
             sys.stdout.flush()
             if early_stopping:
-                if avg_loss < best_loss - 1e-4:
-                    best_loss = avg_loss
+                if avg_loss < self.best_loss - 1e-4:
+                    self.best_loss = avg_loss
                     epochs_no_improve = 0
                 else:
                     epochs_no_improve += 1
@@ -244,6 +249,11 @@ class Model:
                         print(f"Stopping early at epoch {epoch+1} due to no improvement.")
                         self.logger.log(f"Early stopping at epoch {epoch+1} - No improvement for {patience} epochs", "INFO")
                         break
+            """if accuracy > self.best_val_acc:
+                self.best_val_acc = accuracy
+                print("best model found! Saving checkpoint...")
+                self.save("_temp_best_model.pkl")
+                self.best_model_state = Model.load("_temp_best_model.pkl")"""
             self.logger.log(f"Epoch {epoch+1}/{epochs} completed - Loss: {gpu.to_cpu(avg_loss):.4f}, Accuracy: {accuracy:.4f}, Time: {epoch_time:.1f}s", "INFO")
         y_pred_batches = []
         for i in range(0, X_test.shape[0], batch_size):
@@ -302,10 +312,15 @@ class Model:
             y_pred_gpu = xp.array(y_pred_cpu)
             loss = self.loss_fn(y_true_gpu, y_pred_gpu)
             print(f"Final Loss: {gpu.to_cpu(loss):.4f}")
-
+    def save_best(self, path="best_model.pkl"):
+        if self.best_model_state is not None:
+            self.best_model_state.save(path)
+            print(f"✅ Best model saved to {path}")
+        else:
+            print("⚠️ No best model state to save.")
     def save(self, path):
         logger_backup = getattr(self, 'logger', None)
-        if logger_backup:
+        if logger_backup :
             self.logger = None
         for layer in self.layers:
             for attr in ['w', 'b', 'filters', 'biases']:

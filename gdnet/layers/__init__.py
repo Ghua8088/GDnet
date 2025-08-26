@@ -10,3 +10,4 @@ from .TransformerBlock import TransformerBlock
 from .DebugShape import DebugShape
 from .DotProductAttentionLayer import DotProductAttentionLayer  
 from .Flatten import Flatten
+from .DropoutLayer import DropoutLayer
