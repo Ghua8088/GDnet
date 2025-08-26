@@ -1,6 +1,6 @@
 [project]
 name = "gdnet"
-version = "0.1"
+version = "0.2"
 description = "A lightweight neural network framework"
 authors = [
   { name="Ghua8088" }
